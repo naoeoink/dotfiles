@@ -1,0 +1,94 @@
+#!/bin/bash
+
+artist=$(playerctl metadata artist 2>/dev/null)
+title=$(playerctl metadata title 2>/dev/null)
+
+if [[ -z "$artist" || -z "$title" ]]; then
+    echo "Nenhuma música tocando."
+    exit 1
+fi
+
+echo "Buscando lyrics..."
+
+response=$(curl -sG \
+  --data-urlencode "artist_name=$artist" \
+  --data-urlencode "track_name=$title" \
+  https://lrclib.net/api/get)
+
+synced=$(echo "$response" | jq -r '.syncedLyrics')
+
+if [[ "$synced" == "null" || -z "$synced" ]]; then
+    echo "Sem lyrics sincronizada."
+    exit 1
+fi
+
+mapfile -t LINES <<< "$synced"
+
+last_text=""
+
+draw() {
+
+    text="$1"
+
+    cols=$(tput cols)
+    rows=$(tput lines)
+
+    # usar largura do terminal em vez de 9999
+    ascii=$(toilet -f smblock -w "$cols" "$text")
+
+    height=$(echo "$ascii" | wc -l)
+    width=$(echo "$ascii" | awk '{print length}' | sort -nr | head -n1)
+
+    vpad=$(( (rows - height) / 2 ))
+    hpad=$(( (cols - width) / 2 ))
+
+    ((vpad < 0)) && vpad=0
+    ((hpad < 0)) && hpad=0
+
+    printf "\033[2J\033[H"
+
+    for ((i=0;i<vpad;i++)); do echo; done
+
+    while IFS= read -r line; do
+        printf "%*s%s\n" "$hpad" "" "$line"
+    done <<< "$ascii"
+}
+
+clear
+
+while true; do
+
+    current=$(playerctl position 2>/dev/null)
+    current=${current%.*}
+
+    current_text=""
+
+    for line in "${LINES[@]}"; do
+
+        timestamp=$(echo "$line" | grep -oP '\[\K[0-9:.]+')
+        text=$(echo "$line" | sed 's/\[.*\]//')
+
+        [[ -z "$timestamp" || -z "$text" ]] && continue
+
+        minutes=${timestamp%:*}
+        seconds=${timestamp#*:}
+
+        target=$(echo "$minutes*60 + $seconds" | bc)
+        target=${target%.*}
+
+        if (( current >= target )); then
+            current_text="$text"
+        else
+            break
+        fi
+
+    done
+
+    if [[ "$current_text" != "$last_text" && -n "$current_text" ]]; then
+        last_text="$current_text"
+        draw "$current_text"
+    fi
+
+    sleep 0.05
+
+done
